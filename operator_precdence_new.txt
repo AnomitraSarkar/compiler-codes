@@ -1,0 +1,311 @@
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+
+#define MAXP 50
+#define MAXSYM 100
+#define MAXLEN 200
+
+char productions[MAXP][MAXP];
+int nProd;
+
+char nonT[MAXSYM];
+int nNonT = 0;
+
+char terms[MAXSYM];
+int nTerm = 0;
+
+int firstVT[MAXSYM][MAXSYM];
+int lastVT[MAXSYM][MAXSYM];
+
+char prec[MAXSYM][MAXSYM];  // precedence table
+
+// ================= helpers ====================
+int idxNT(char c) {
+    for (int i = 0; i < nNonT; ++i) if (nonT[i] == c) return i;
+    return -1;
+}
+int idxT(char c) {
+    for (int i = 0; i < nTerm; ++i) if (terms[i] == c) return i;
+    return -1;
+}
+void addNT(char c) {
+    if (!isupper(c)) return;
+    if (idxNT(c) == -1) nonT[nNonT++] = c;
+}
+void addT(char c) {
+    if (c == '\0') return;
+    if (isupper(c)) return;
+    if (c == '#') return;
+    if (idxT(c) == -1) terms[nTerm++] = c;
+}
+
+// ================= FIRSTVT / LASTVT ====================
+void computeFirstVT() {
+    int changed = 1;
+    while (changed) {
+        changed = 0;
+        for (int p = 0; p < nProd; ++p) {
+            char A = productions[p][0];
+            char *rhs = productions[p] + 3;
+            if (!rhs[0]) continue;
+            int Ai = idxNT(A);
+
+            if (!isupper(rhs[0])) {
+                int t = idxT(rhs[0]);
+                if (t != -1 && !firstVT[Ai][t]) { firstVT[Ai][t] = 1; changed = 1; }
+            }
+            if (isupper(rhs[0]) && rhs[1] && !isupper(rhs[1])) {
+                int t = idxT(rhs[1]);
+                if (t != -1 && !firstVT[Ai][t]) { firstVT[Ai][t] = 1; changed = 1; }
+            }
+            if (isupper(rhs[0])) {
+                int Bi = idxNT(rhs[0]);
+                if (Bi != -1) {
+                    for (int t = 0; t < nTerm; ++t) {
+                        if (firstVT[Bi][t] && !firstVT[Ai][t]) { firstVT[Ai][t] = 1; changed = 1; }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void computeLastVT() {
+    int changed = 1;
+    while (changed) {
+        changed = 0;
+        for (int p = 0; p < nProd; ++p) {
+            char A = productions[p][0];
+            char *rhs = productions[p] + 3;
+            int len = strlen(rhs);
+            if (len == 0) continue;
+            int Ai = idxNT(A);
+
+            if (!isupper(rhs[len - 1])) {
+                int t = idxT(rhs[len - 1]);
+                if (t != -1 && !lastVT[Ai][t]) { lastVT[Ai][t] = 1; changed = 1; }
+            }
+            if (len >= 2 && isupper(rhs[len - 1]) && !isupper(rhs[len - 2])) {
+                int t = idxT(rhs[len - 2]);
+                if (t != -1 && !lastVT[Ai][t]) { lastVT[Ai][t] = 1; changed = 1; }
+            }
+            if (isupper(rhs[len - 1])) {
+                int Bi = idxNT(rhs[len - 1]);
+                if (Bi != -1) {
+                    for (int t = 0; t < nTerm; ++t) {
+                        if (lastVT[Bi][t] && !lastVT[Ai][t]) { lastVT[Ai][t] = 1; changed = 1; }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ================= precedence table ====================
+void buildPrecedence() {
+    if (idxT('$') == -1) terms[nTerm++] = '$';
+
+    for (int i = 0; i < nTerm; ++i)
+        for (int j = 0; j < nTerm; ++j)
+            prec[i][j] = ' ';
+
+    // Rule 1: a b -> a = b
+    for (int p = 0; p < nProd; ++p) {
+        char *rhs = productions[p] + 3;
+        int len = strlen(rhs);
+        for (int k = 0; k < len - 1; ++k) {
+            char a = rhs[k], b = rhs[k + 1];
+            if (!isupper(a) && !isupper(b)) {
+                int ai = idxT(a), bi = idxT(b);
+                if (ai != -1 && bi != -1) prec[ai][bi] = '=';
+            }
+        }
+    }
+
+    // Rule 2: a B => a < FIRSTVT(B)
+    for (int p = 0; p < nProd; ++p) {
+        char *rhs = productions[p] + 3;
+        int len = strlen(rhs);
+        for (int k = 0; k < len - 1; ++k) {
+            char a = rhs[k], B = rhs[k + 1];
+            if (!isupper(a) && isupper(B)) {
+                int ai = idxT(a), Bi = idxNT(B);
+                if (ai != -1 && Bi != -1) {
+                    for (int t = 0; t < nTerm; ++t)
+                        if (firstVT[Bi][t]) prec[ai][t] = '<';
+                }
+            }
+        }
+    }
+
+    // Rule 3: B a => LASTVT(B) > a
+    for (int p = 0; p < nProd; ++p) {
+        char *rhs = productions[p] + 3;
+        int len = strlen(rhs);
+        for (int k = 0; k < len - 1; ++k) {
+            char B = rhs[k], a = rhs[k + 1];
+            if (isupper(B) && !isupper(a)) {
+                int ai = idxT(a), Bi = idxNT(B);
+                if (ai != -1 && Bi != -1) {
+                    for (int t = 0; t < nTerm; ++t)
+                        if (lastVT[Bi][t]) prec[t][ai] = '>';
+                }
+            }
+        }
+    }
+
+    // Triple rule: a B c => a = c
+    for (int p = 0; p < nProd; ++p) {
+        char *rhs = productions[p] + 3;
+        int len = strlen(rhs);
+        for (int k = 0; k < len - 2; ++k) {
+            char a = rhs[k], B = rhs[k + 1], c = rhs[k + 2];
+            if (!isupper(a) && isupper(B) && !isupper(c)) {
+                int ai = idxT(a), ci = idxT(c);
+                if (ai != -1 && ci != -1) prec[ai][ci] = '=';
+            }
+        }
+    }
+
+    // $ relations
+    char start = productions[0][0];
+    int starti = idxNT(start);
+    int doll = idxT('$');
+    if (starti != -1 && doll != -1) {
+        for (int t = 0; t < nTerm; ++t) {
+            if (firstVT[starti][t]) prec[doll][t] = '<';
+            if (lastVT[starti][t]) prec[t][doll] = '>';
+        }
+    }
+}
+
+// ================== parser ====================
+int topmostTerminalIndex(char stack[], int top) {
+    for (int i = top; i >= 0; i--) {
+        if (!isupper(stack[i])) { 
+            return i;
+        }
+    }
+    return -1;
+}
+
+void parseInput(char input[]) {
+    char stack[MAXLEN]; int top = 0;
+    stack[0] = '$'; stack[1] = '\0';
+    int ip = 0;
+
+    printf("\nParsing trace:\n");
+    printf("Stack\t\tInput\t\tAction\n");
+
+    while (1) {
+        int tpos = topmostTerminalIndex(stack, top);
+        char a = stack[tpos];
+        char b = input[ip];
+
+        // Check for acceptance
+        if (a == '$' && b == '$') {
+            printf("%s\t\t%s\t\tAccepted\n", stack, input + ip);
+            break;
+        }
+
+        int ai = idxT(a), bi = idxT(b);
+
+        printf("%s\t\t%s\t\t", stack, input + ip);
+
+        if (ai == -1 || bi == -1) {
+            printf("ERROR: terminal not found\n");
+            break;
+        }
+        char rel = prec[ai][bi];
+        
+        if (rel == ' ') {
+            printf("Error: no relation (%c, %c)\n", a, b);
+            break;
+        }
+
+        if (rel == '<' || rel == '=') {
+            printf("Shift %c\n", b);
+            stack[++top] = b; stack[top + 1] = '\0';
+            ip++;
+        } else if (rel == '>') {
+            printf("Reduce\n");
+            int i = tpos;
+            while (i > 0) {
+                int j = topmostTerminalIndex(stack, i - 1);
+                if (j == -1) { // Handle for "reduce E->1"
+                    top = 0;
+                    stack[top] = 'N'; 
+                    stack[top + 1] = '\0';
+                    break;
+                }
+                char terminal_j = stack[j];
+                char terminal_i = stack[i];
+                int j_idx = idxT(terminal_j);
+                int i_idx = idxT(terminal_i);
+                
+                if (j_idx != -1 && i_idx != -1 && prec[j_idx][i_idx] == '<') {
+                    top = j + 1;
+                    stack[top] = 'N'; 
+                    stack[top + 1] = '\0';
+                    break;
+                }
+                i = j;
+            }
+        }
+    }
+}
+
+// ================= main ====================
+int main() {
+    printf("Enter number of productions: ");
+    scanf("%d", &nProd); getchar();
+
+    printf("Enter productions (A->rhs):\n");
+    for (int i = 0; i < nProd; ++i) {
+        fgets(productions[i], sizeof(productions[i]), stdin);
+        productions[i][strcspn(productions[i], "\n")] = '\0';
+        if (productions[i][0] == '\0') { i--; continue; }
+        addNT(productions[i][0]);
+        for (int j = 3; productions[i][j]; ++j) {
+            addNT(productions[i][j]);
+            addT(productions[i][j]);
+        }
+    }
+
+    computeFirstVT();
+    computeLastVT();
+    buildPrecedence();
+
+    printf("\nFIRSTVT sets:\n");
+    for (int nt = 0; nt < nNonT; ++nt) {
+        printf("%c: { ", nonT[nt]);
+        for (int t = 0; t < nTerm; ++t)
+            if (firstVT[nt][t]) printf("%c ", terms[t]);
+        printf("}\n");
+    }
+    printf("\nLASTVT sets:\n");
+    for (int nt = 0; nt < nNonT; ++nt) {
+        printf("%c: { ", nonT[nt]);
+        for (int t = 0; t < nTerm; ++t)
+            if (lastVT[nt][t]) printf("%c ", terms[t]);
+        printf("}\n");
+    }
+
+    printf("\nOperator Precedence Table:\n    ");
+    for (int t = 0; t < nTerm; ++t) printf(" %c ", terms[t]);
+    printf("\n");
+    for (int i = 0; i < nTerm; ++i) {
+        printf("%c |", terms[i]);
+        for (int j = 0; j < nTerm; ++j) printf(" %c ", prec[i][j]);
+        printf("\n");
+    }
+
+    char input[MAXLEN];
+    printf("\nEnter input string: ");
+    scanf("%s", input);
+    strcat(input, "$");
+
+    parseInput(input);
+    return 0;
+}
